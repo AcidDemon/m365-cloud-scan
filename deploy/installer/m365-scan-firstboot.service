@@ -1,0 +1,22 @@
+[Unit]
+Description=M365 scan box first-boot provisioning (runs the ansible deploy locally, once)
+After=network-online.target
+Wants=network-online.target
+# Deliberately not gated on a ConditionPathExists: when the converge fails,
+# firstboot.sh is the thing that says so (motd + wall + status file), and a
+# condition would make that case silent, leaving a box that looks installed and
+# does nothing. firstboot.sh disables this unit once it succeeds, so no loop.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/m365-scan-firstboot/firstboot.sh
+# Surface progress + any failure on the attached monitor for a headless colleague.
+StandardOutput=journal+console
+StandardError=journal+console
+# First-run provisioning (esp. AIDE db init) can take a long time on slow disks;
+# never let systemd time out and kill it mid-converge.
+TimeoutStartSec=infinity
+
+[Install]
+WantedBy=multi-user.target

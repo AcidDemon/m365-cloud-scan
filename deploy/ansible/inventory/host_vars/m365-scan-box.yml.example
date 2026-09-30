@@ -1,0 +1,21 @@
+---
+# Box-specific. Copy to m365-scan-box.yml (gitignored) and edit.
+ansible_host: 192.0.2.10
+# The account Ansible connects as. ssh_hardening checks that this user is in a
+# group SSH will still admit after the cutover, and skips that check when the
+# variable is unset, so leaving it out disables the one guard against locking
+# yourself out of the box.
+ansible_user: ansible
+
+# The office LAN. management_cidrs may reach SSH and the admin UI;
+# m365_scan_client_cidrs may reach SMB and mDNS, which is where the MFPs sit.
+# Both are usually the same subnet on a small office box.
+management_cidrs:
+  - 192.0.2.0/24
+m365_scan_client_cidrs:
+  - 192.0.2.0/24
+
+# The SMB server name. Also becomes the box hostname and <name>.local via mDNS.
+# Up to 15 characters, letters/digits/hyphens, no dots.
+m365_scan_netbios_name: m365scan
+m365_scan_workgroup: WORKGROUP

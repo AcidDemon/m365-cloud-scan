@@ -1,0 +1,20 @@
+---
+# The baseline owns the firewall (a single 'inet base_filter' table), the
+# hostname, ca-certificates and unattended upgrades. Ports are opened through the
+# firewall_* variables in inventory/group_vars/all/main.yml.
+- name: Base system setup
+  import_playbook: acidnetworks.base_debian.site
+
+# Hardening runs second because it hardens what the baseline created, and before
+# the app because ssh_hardening can end the connection: if it does, the run stops
+# without a half-installed daemon behind it.
+- name: Security hardening
+  import_playbook: acidnetworks.hardening_debian.harden
+
+- name: M365 scan box
+  hosts: m365_scan_boxes
+  become: true
+  roles:
+    # Tagged so a binary or config redeploy can target the app alone
+    # (`ansible-playbook site.yml --tags scan`) without re-running the baseline.
+    - { role: m365_scan, tags: [scan] }

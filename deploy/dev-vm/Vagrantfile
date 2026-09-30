@@ -1,0 +1,114 @@
+# A throwaway Debian 13 box for working on the parts that need a real machine:
+# creating a share means useradd, smbpasswd and net conf, which cannot run on a
+# NixOS workstation. scripts/dev.sh stays fine for UI work, it just cannot make
+# a share.
+#
+# Requires vagrant-libvirt. The VM has no Go toolchain: the binaries are
+# cross-built on the host by the trigger below and rsynced in.
+#
+#   vagrant up            build, boot, provision, print the password
+#   ./reload.sh           after a Go change, no full provision
+#   vagrant destroy -f    throw it away
+Vagrant.configure("2") do |config|
+  config.vm.box = "debian/trixie64"
+  config.vm.hostname = "m365scan-dev"
+
+  # Cross-build before the VM needs the binaries, so the rsync below carries
+  # them in.
+  config.trigger.before [:up, :provision] do |t|
+    t.info = "cross-building m365-scan and devsetup for the VM"
+    t.run = {inline: "bash #{File.dirname(__FILE__)}/build.sh"}
+  end
+
+  config.vm.provider :libvirt do |v|
+    v.memory = 2048
+    v.cpus = 2
+  end
+
+  # A static address on its own network, because forwarded ports go through an
+  # SSH tunnel and 445 is privileged on the host. smbclient talks to this
+  # address directly.
+  # No second network. vagrant-libvirt's management network already gives the
+  # host a route to the box, which is all SMB and the admin UI need, and every
+  # extra libvirt network runs another dnsmasq that systemd-resolved adopts and
+  # then loops queries through, taking DNS down on the host while the box runs.
+  # `vagrant ssh -c "hostname -I"` prints the address; provisioning prints it too.
+  config.vm.network "forwarded_port", guest: 8444, host: 8444, host_ip: "127.0.0.1"
+
+  # vagrant-libvirt shares /vagrant over NFS by default, which wants an
+  # /etc/exports the host may not have (NixOS). Nothing here uses it, the
+  # payload comes in via the rsync'd /repo below.
+  config.vm.synced_folder ".", "/vagrant", disabled: true
+
+  # ../.. is the repo root (this file is deploy/dev-vm/).
+  config.vm.synced_folder "../..", "/repo", type: "rsync",
+    rsync__exclude: [".git/", ".dev/", "dist/", "build/", ".secrets/"]
+
+  # No firewall is installed on the box image and none is added here: this is a
+  # disposable VM on a private network.
+  config.vm.provision "shell", privileged: false, inline: <<-SH
+    set -euo pipefail
+    sudo apt-get update -qq
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq samba smbclient openssl avahi-daemon avahi-utils
+
+    sudo install -m 0755 /repo/deploy/dev-vm/.build/m365-scan /usr/local/bin/m365-scan
+    sudo install -m 0755 /repo/deploy/dev-vm/.build/devsetup  /usr/local/bin/m365-scan-devsetup
+    sudo install -m 0644 /repo/deploy/m365-scan.service /etc/systemd/system/m365-scan.service
+    sudo install -m 0644 /repo/deploy/smb.conf /etc/samba/smb.conf
+    sudo install -d -m 0750 /etc/m365-scan /var/lib/m365-scan
+    sudo install -d -m 0755 /srv/m365-scan
+
+    # smb.conf points at the registry, so the globals have to be set there too.
+    # The Settings page writes the first three; the rest is what the shipped box
+    # will have.
+    for p in "netbios name=M365SCAN" "workgroup=WORKGROUP" "server min protocol=SMB2" \
+             "security=user" "map to guest=never" \
+             "load printers=no" "printing=bsd" "printcap name=/dev/null" "disable spoolss=yes" \
+             "logging=file" "log file=/var/log/samba/log.%m" "max log size=1000" \
+             "panic action=/usr/share/samba/panic-action %d"; do
+      sudo net conf setparm global "${p%%=*}" "${p#*=}"
+    done
+    sudo systemctl restart smbd nmbd
+
+    # Written once, so re-provisioning keeps the session secret and with it any
+    # browser session. The paths are the production ones.
+    if [ ! -f /etc/m365-scan/config.json ]; then
+      secret=$(openssl rand -hex 32)
+      sudo tee /etc/m365-scan/config.json >/dev/null <<EOF
+{
+  "statePath": "/var/lib/m365-scan/state.json",
+  "shareRoot": "/srv/m365-scan",
+  "quarantineDir": "/var/lib/m365-scan/quarantine",
+  "progressDir": "/var/lib/m365-scan/progress",
+  "ui": {
+    "bindAddr": "0.0.0.0:8444",
+    "certPath": "/etc/m365-scan/ui-cert.pem",
+    "keyPath": "/etc/m365-scan/ui-key.pem",
+    "passwordFile": "/var/lib/m365-scan/ui-password",
+    "sessionSecret": "$secret"
+  },
+  "netbiosName": "m365scan"
+}
+EOF
+      sudo chmod 0600 /etc/m365-scan/config.json
+    fi
+
+    # The demo shares, destinations and routes. Skipped once state.json exists.
+    sudo m365-scan-devsetup -config /etc/m365-scan/config.json
+
+    # reset-password writes the hash to the password file, which the config
+    # loader prefers over the (here absent) hash in config.json.
+    pw=$(openssl rand -hex 8)
+    sudo m365-scan reset-password "$pw"
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now m365-scan
+    sudo systemctl restart m365-scan
+    sleep 2
+    systemctl is-active m365-scan
+    ip=$(hostname -I | awk '{print $1}')
+    printf '\\n  admin UI   https://127.0.0.1:8444  (or https://'"$ip"':8444)\\n'
+    printf '  SMB        //'"$ip"'/<share>  (or //m365scan.local/<share>)\\n'
+    printf '  password   %s\\n\\n' "$pw"
+  SH
+end

@@ -1,0 +1,15 @@
+---
+collections:
+  - name: community.general
+  - name: ansible.posix
+  # The Debian baseline: users, packages, timezone, unattended-upgrades and
+  # the nftables host firewall. Fetch with:
+  #   ansible-galaxy collection install -r requirements.yml
+  - name: git+ssh://git@github.com/AcidDemon/ansible-base-debian.git
+    type: git
+    version: v0.3.0
+  # SSH hardening, auditd, AIDE, CrowdSec, fail2ban, rootkit scanners and Lynis,
+  # behind a systemd-timer rollback in case the SSH cutover locks the run out.
+  - name: git+ssh://git@github.com/AcidDemon/ansible-hardening-debian.git
+    type: git
+    version: v0.2.3

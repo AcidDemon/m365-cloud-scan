@@ -1,0 +1,30 @@
+---
+# There is no reload path: the daemon reads its config once at startup and
+# registers no SIGHUP handler (cmd/m365-scan/main.go:68,129).
+- name: Restart m365-scan
+  ansible.builtin.systemd: { name: m365-scan, state: restarted, daemon_reload: true }
+
+- name: Restart samba
+  ansible.builtin.systemd: { name: "{{ item }}", state: restarted }
+  loop: [smbd, nmbd]
+
+# Only when AIDE is actually installed: `removes` skips the task when the database
+# is absent, which is the case on a box deployed without the hardening layer.
+# aide --update exits non-zero as a bitmask when it finds differences, and finding
+# differences is the whole point of running it here.
+- name: Refresh AIDE database
+  ansible.builtin.command: aide --config /etc/aide/aide.conf --update
+  args:
+    removes: /var/lib/aide/aide.db
+  register: m365_scan_aide_refresh
+  # Must report changed: a handler that reports otherwise never notifies the one
+  # below it, which is what actually moves the rebuilt database into place.
+  changed_when: true
+  failed_when: m365_scan_aide_refresh.rc is defined and m365_scan_aide_refresh.rc > 7
+  notify: Install the refreshed AIDE database
+
+- name: Install the refreshed AIDE database
+  ansible.builtin.command: mv /var/lib/aide/aide.db.new /var/lib/aide/aide.db
+  args:
+    removes: /var/lib/aide/aide.db.new
+  changed_when: true

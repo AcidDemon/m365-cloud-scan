@@ -1,0 +1,49 @@
+---
+- name: Acceptance checks
+  hosts: m365_scan_boxes
+  become: true
+  gather_facts: false
+  # This playbook applies no role, so the role's defaults are not in scope.
+  vars:
+    scan_name: "{{ m365_scan_netbios_name | default('m365scan') }}"
+    scan_ui_port: "{{ (m365_scan_ui_bind_addr | default('0.0.0.0:8444')).split(':')[-1] }}"
+  tasks:
+    - name: Samba, mDNS and the daemon are all active
+      ansible.builtin.command: systemctl is-active {{ item }}  # noqa: command-instead-of-module
+      register: svc
+      changed_when: false
+      failed_when: svc.stdout != "active"
+      loop: [smbd, nmbd, avahi-daemon, m365-scan]
+
+    - name: Samba is reading its configuration from the registry
+      ansible.builtin.command: net conf list
+      register: netconf
+      changed_when: false
+
+    - name: The registry carries the server name
+      ansible.builtin.assert:
+        that: "'netbios name = ' ~ (scan_name | upper) in netconf.stdout"
+
+    - name: The firewall opened the admin UI and SMB
+      ansible.builtin.command: nft list ruleset
+      register: nft
+      changed_when: false
+
+    - name: The UI and SMB rules are in the ruleset
+      ansible.builtin.assert:
+        that:
+          - "'tcp dport ' ~ scan_ui_port ~ ' accept' in nft.stdout"
+          - "'tcp dport 445 accept' in nft.stdout"
+
+    - name: The admin UI answers over HTTPS
+      ansible.builtin.uri:
+        url: "https://{{ ansible_host | default(inventory_hostname) }}:{{ scan_ui_port }}/"
+        validate_certs: false
+        return_content: true
+      register: ui
+      delegate_to: localhost
+      become: false
+
+    - name: It serves the sign-in page
+      ansible.builtin.assert:
+        that: "'M365 CLOUD SCAN' in ui.content"

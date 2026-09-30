@@ -1,0 +1,28 @@
+[Unit]
+Description=M365 Cloud Scan
+# nftables.service because the daemon re-applies its own network-access drop-in
+# on every start, and the `nft -c -f` check it does that with is validated
+# against live kernel state: it fails if the base_filter table is not loaded yet.
+After=network-online.target smbd.service avahi-daemon.service nftables.service
+Wants=network-online.target smbd.service avahi-daemon.service nftables.service
+
+[Service]
+ExecStart=/usr/local/bin/m365-scan -config /etc/m365-scan/config.json serve
+Restart=always
+RestartSec=5
+
+# Root, not DynamicUser like the print box's fetcher: this daemon runs useradd,
+# userdel, smbpasswd and net conf, and it chowns the share directories to the
+# accounts it created. A DynamicUser identity is gone by the next start while
+# the system accounts it made are not.
+User=root
+
+# It writes /etc/samba, /etc/passwd and /etc/shadow, so ProtectSystem is out.
+# These three are not: useradd runs --system --no-create-home, and the only
+# temporary file is written next to the state file, not in /tmp.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

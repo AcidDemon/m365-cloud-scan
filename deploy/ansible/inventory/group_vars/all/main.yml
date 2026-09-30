@@ -1,0 +1,92 @@
+---
+# --- identity & access (consumed by acidnetworks.base_debian) ---
+admin_user: acid
+deploy_user: ansible
+ssh_port: 22
+management_cidrs: []          # set per box in host_vars
+
+# --- os_base ---
+os_base_timezone: Europe/Berlin
+# One source for the box name: the daemon runs `hostnamectl set-hostname` itself
+# from netbiosName on every start (internal/mdns/mdns.go:56-60), so anything else
+# here gets silently overridden on the next restart.
+os_base_hostname: "{{ m365_scan_netbios_name | default('m365scan') | lower }}"
+base_packages: [vim, git, curl, ca-certificates, rsync]
+target_users:
+  - { name: root, home: /root }
+  - { name: "{{ admin_user }}", home: "/home/{{ admin_user }}" }
+git_user_name: "ops"
+git_user_email: "ops@example.com"
+
+# --- firewall (base_firewall; must live here because the baseline play runs
+#     before the scan role) ---
+# Management tier: SSH and the admin UI.
+firewall_allow_tcp_mgmt: [22, 8444]
+firewall_allow_udp_mgmt: []
+# Service tier: what the copiers need. 445 is SMB; 139/137/138 are the NetBIOS
+# path older MFP firmware still uses to resolve \\M365SCAN; 5353 is mDNS, which
+# is how the box answers to <name>.local.
+firewall_service_cidrs: "{{ m365_scan_client_cidrs | default([]) }}"
+firewall_allow_tcp_svc: [139, 445]
+firewall_allow_udp_svc: [137, 138, 5353]
+firewall_allow_tcp: []
+firewall_allow_udp: []
+# The way back in, and the only one the box UI cannot take away. Pinned by
+# interface, not by address: an iifname match cannot be spoofed and survives
+# Tailscale changing its ranges. A source-address rule on 100.64.0.0/10 would do
+# neither — that is the shared carrier-grade NAT block, so on a box behind CGNAT
+# it admits every other subscriber of the same ISP to 22 and 8444.
+firewall_trust_iifnames: [tailscale0]
+firewall_forward_policy: drop
+
+# --- hardening (acidnetworks.hardening_debian) ---
+# The dead-man's-switch has no default anywhere in the collection and the play
+# reads it in a bare `when`, so leaving it out fails the run on the first task.
+# It is also the recovery plan: if the SSH cutover locks the control node out, a
+# systemd timer strips the sshd drop-ins again after this many minutes.
+harden_safe_rollback: true
+harden_rollback_minutes: 20
+
+# The hostname is this box's SMB and mDNS identity, and the daemon re-asserts it
+# from netbiosName on every start. Hardening's os_base would set it to
+# inventory_hostname instead and rewrite /etc/hosts to match, so three writers
+# would fight over one name. Everything it does besides that (timezone, packages,
+# /etc/hosts) the baseline already did.
+harden_manage_os_base: false
+
+# No vault on this box, and the msmtp template dereferences vault_smtp_user and
+# vault_smtp_password with no defaults, so leaving this on aborts the run before
+# the daemon is installed. Reporting needs the same MTA, so it goes too.
+hardening_misc_msmtp: false
+security_reporting_enabled: false
+
+# The baseline already owns both unattended-upgrades files. Two layers writing
+# the same destination means the second one silently wins, and hardening's copy
+# drops the package hold-list on a box where smbd is load-bearing. Use
+# base_updates_hold_packages if a samba version ever needs pinning.
+auto_updates_enabled: false
+
+# Headless appliance, key-only SSH: an interactive TOTP prompt has nobody to
+# answer it. nullok stays on as a seatbelt in case someone flips TOTP back later
+# before anyone has enrolled.
+ssh_2fa_totp_enabled: false
+ssh_2fa_fido2_enabled: false
+ssh_2fa_totp_nullok: true
+
+# Both tools ban whole IPs from their own nftables tables, which hook the input
+# chain ahead of base_filter and so outrank its port 445 accept. Nothing they
+# ship can currently ban a copier, but the copier subnet is a different variable
+# from the management one and neither tool would otherwise see it.
+crowdsec_whitelist_cidrs: "{{ (management_cidrs + (m365_scan_client_cidrs | default([]))) | unique }}"
+fail2ban_ignoreip: "{{ (management_cidrs + (m365_scan_client_cidrs | default([]))) | unique }}"
+
+# The shipped excludes are Nextcloud paths. Without these the nightly check
+# reports every share and every scanned file, and a report nobody reads is a
+# report that hides a real hit. /etc/passwd, /etc/shadow and /etc/samba still
+# churn whenever a share is created: that is Debian's stock aide.conf, and
+# excluding them would gut the point of running AIDE at all.
+aide_exclude_paths:
+  - /srv/m365-scan
+  - /var/lib/m365-scan
+  - /var/lib/samba
+  - /var/cache/samba

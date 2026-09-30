@@ -1,0 +1,170 @@
+---
+# Order is load-bearing. The daemon refuses to start without an admin password
+# hash (internal/config/config.go:311), and `reset-password` needs a config file
+# it can already parse (cmd/m365-scan/main.go:191). So: directories, then the
+# config, then the password, and only then the service.
+
+- name: Install the packages the box runs on
+  ansible.builtin.apt:
+    name: [samba, avahi-daemon, openssl]
+    state: present
+    update_cache: true
+    cache_valid_time: 3600
+
+# Nothing downstream creates these: the daemon writes its UI certificate and its
+# password file with a bare os.WriteFile.
+- name: Create the config, state and share directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ m365_scan_conf_dir }}", mode: "0750" }
+    - { path: "{{ m365_scan_state_dir }}", mode: "0750" }
+    - { path: "{{ m365_scan_share_root }}", mode: "0755" }
+  loop_control: { label: "{{ item.path }}" }
+
+- name: Install the daemon
+  ansible.builtin.copy:
+    src: "m365-scan-{{ m365_scan_arch }}"
+    dest: "{{ m365_scan_bin }}"
+    owner: root
+    group: root
+    mode: "0755"
+  notify:
+    - Restart m365-scan
+    - Refresh AIDE database
+
+- name: Install the systemd unit
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../m365-scan.service"
+    dest: /etc/systemd/system/m365-scan.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart m365-scan
+
+- name: Install smb.conf
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/../smb.conf"
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart samba
+
+# The session secret signs the admin UI's cookies (internal/scanui/auth.go:61-77).
+# Rotating it logs everyone out, so a box that already has one keeps it.
+- name: Read the config a box already has
+  ansible.builtin.slurp:
+    src: "{{ m365_scan_conf_dir }}/config.json"
+  register: m365_scan_existing_config
+  failed_when: false
+  no_log: true
+
+- name: Mint a session secret for a box that has none
+  ansible.builtin.command: openssl rand -hex 32
+  register: m365_scan_minted_secret
+  when: m365_scan_existing_config.content is not defined
+  changed_when: true
+  no_log: true
+
+- name: Settle on the session secret
+  ansible.builtin.set_fact:
+    m365_scan_session_secret: >-
+      {{ (m365_scan_existing_config.content | b64decode | from_json).ui.sessionSecret
+         if m365_scan_existing_config.content is defined
+         else m365_scan_minted_secret.stdout }}
+  no_log: true
+
+- name: Deploy config.json
+  ansible.builtin.template:
+    src: config.json.j2
+    dest: "{{ m365_scan_conf_dir }}/config.json"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart m365-scan
+
+# smbd reads only the registry, so these are the globals that actually apply.
+# Seeded where absent and never overwritten: the Settings page owns the server
+# name, the workgroup and the protocol floor once the box is live
+# (internal/scanui/handlers.go:681-702).
+- name: Read the Samba registry globals
+  ansible.builtin.command:
+    argv: [net, conf, getparm, global, "{{ item.key }}"]
+  loop: "{{ m365_scan_samba_globals | dict2items }}"
+  loop_control: { label: "{{ item.key }}" }
+  register: m365_scan_getparm
+  failed_when: false
+  changed_when: false
+
+- name: Seed the globals the registry is missing
+  ansible.builtin.command:
+    argv: [net, conf, setparm, global, "{{ item.item.key }}", "{{ item.item.value }}"]
+  loop: "{{ m365_scan_getparm.results }}"
+  loop_control: { label: "{{ item.item.key }}" }
+  when: item.rc != 0
+  changed_when: true
+  notify: Restart samba
+
+- name: Enable Samba and mDNS
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [smbd, nmbd, avahi-daemon]
+
+# The daemon will not start without a password hash to check against, and there
+# is no default one. `reset-password` writes it to the password file, which the
+# config loader prefers over anything in config.json, so a password the admin
+# later changes in the UI survives every redeploy.
+- name: Look for an admin password
+  ansible.builtin.stat:
+    path: "{{ m365_scan_state_dir }}/ui-password"
+  register: m365_scan_pwfile
+
+- name: Mint the initial admin password
+  ansible.builtin.command: openssl rand -hex 8
+  register: m365_scan_minted_pw
+  when: not m365_scan_pwfile.stat.exists
+  changed_when: true
+  no_log: true
+
+# Printed before it is stored, not after. Once the hash is on disk the stat guard
+# below skips minting on every later run, so a failure between here and the end of
+# the play would otherwise leave a box nobody can sign in to.
+- name: The initial admin password, shown once
+  ansible.builtin.debug:
+    msg:
+      - "admin UI  https://{{ ansible_host | default(inventory_hostname) }}:{{ m365_scan_ui_bind_addr.split(':')[-1] }}"
+      - "password  {{ m365_scan_minted_pw.stdout }}"
+      - "Sign in and connect the Microsoft 365 tenant under Settings."
+  when: not m365_scan_pwfile.stat.exists
+
+# ponytail: the plaintext rides in argv, so it is visible in `ps` for the length
+# of the call. Acceptable on a box only the admin can log into; the fix is a
+# stdin mode on reset-password if this ever ships to shared hosts.
+- name: Store the initial admin password
+  ansible.builtin.command:
+    argv: ["{{ m365_scan_bin }}", -config, "{{ m365_scan_conf_dir }}/config.json",
+           reset-password, "{{ m365_scan_minted_pw.stdout }}"]
+  when: not m365_scan_pwfile.stat.exists
+  changed_when: true
+  no_log: true
+
+# The AIDE refresh is here because starting the daemon is what writes
+# /etc/nftables.d/zz-m365-scan.nft — its network-access drop-in. That is under
+# /etc, which stock aide.conf watches, so without this the first nightly security
+# report after every deploy opens with a change nobody can explain, and a report
+# people learn to skim is a report that hides a real hit.
+- name: Start the daemon
+  ansible.builtin.systemd:
+    name: m365-scan
+    enabled: true
+    state: started
+    daemon_reload: true
+  notify: Refresh AIDE database

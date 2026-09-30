@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 32 32" role="img" aria-label="M365 Cloud Scan">
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.5 28.5h15a1.5 1.5 0 0 0 1.5-1.5V9.6L19.4 3.5H8.5A1.5 1.5 0 0 0 7 5v22a1.5 1.5 0 0 0 1.5 1.5z" stroke="#DBDEE4" stroke-width="2"/>
+    <path d="M19 3.8v4.4a1.4 1.4 0 0 0 1.4 1.4H25" stroke="#DBDEE4" stroke-width="1.6" opacity="0.38"/>
+    <path d="M11 20h10M11 24h6" stroke="#DBDEE4" stroke-width="1.6" opacity="0.38"/>
+    <path d="M6 11.6h20M6 18.4h20" stroke="#EBA335" stroke-width="1.4" opacity="0.42"/>
+    <path d="M3.5 15h25" stroke="#EBA335" stroke-width="2.8"/>
+  </g>
+</svg>

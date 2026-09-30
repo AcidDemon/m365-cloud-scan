@@ -1,0 +1,7 @@
+.vault-pass
+# Operator public keys are per-deployment. The directory ships, its contents do not.
+files/ssh/*
+!files/ssh/README.md
+.ansible/
+# Box-specific. The .example file is the template; the real one stays local.
+inventory/host_vars/*.yml

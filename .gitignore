@@ -1,0 +1,32 @@
+/dist/
+/pass
+/build/
+*.pem
+.secrets/
+deploy/ansible/.vault-pass
+deploy/ansible/inventory/group_vars/all/vault.yml
+/.dev/
+/deploy/dev-vm/.build/
+/deploy/ansible/roles/m365_scan/files/m365-scan-*
+/deploy/dev-vm/.vagrant/
+/demo/out/
+/demo/node_modules/
+/.dev-run.log
+/.serena/
+
+# Local test artefacts that live in the repo root while a box is being tried
+# out: the box's admin UI password, the Tailscale OAuth client secret (which
+# does not expire, unlike an auth key) and a downloaded base image. One
+# `git add -A` is all it would take, and the ISO alone is 4 GB.
+/admin-webui
+/tailscale-key
+/*.iso
+# Same things once they are collected in one place — an ssh private key, the
+# box password and the OAuth secret. Anchored entries above do not cover a
+# subdirectory, which is exactly how they escaped the first time.
+/bootstrap/
+
+# The German setup runbook and its step screenshots are for internal company
+# use, not the public repo. README screenshots live under docs/screenshots/.
+/docs/EINRICHTUNG.md
+/docs/img/

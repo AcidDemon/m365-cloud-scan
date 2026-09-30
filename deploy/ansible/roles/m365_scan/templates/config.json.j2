@@ -1,0 +1,14 @@
+{
+  "statePath": "{{ m365_scan_state_dir }}/state.json",
+  "shareRoot": "{{ m365_scan_share_root }}",
+  "quarantineDir": "{{ m365_scan_state_dir }}/quarantine",
+  "progressDir": "{{ m365_scan_state_dir }}/progress",
+  "ui": {
+    "bindAddr": "{{ m365_scan_ui_bind_addr }}",
+    "certPath": "{{ m365_scan_conf_dir }}/ui-cert.pem",
+    "keyPath": "{{ m365_scan_conf_dir }}/ui-key.pem",
+    "passwordFile": "{{ m365_scan_state_dir }}/ui-password",
+    "sessionSecret": "{{ m365_scan_session_secret }}"
+  },
+  "netbiosName": "{{ m365_scan_netbios_name }}"
+}

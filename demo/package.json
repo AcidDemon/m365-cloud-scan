@@ -1,0 +1,13 @@
+{
+  "name": "m365-cloud-scan-demo",
+  "private": true,
+  "type": "module",
+  "description": "Records the box setup as a video. Not part of the product build.",
+  "scripts": {
+    "record": "node demo.mjs",
+    "render": "bash render.sh"
+  },
+  "dependencies": {
+    "playwright-core": "^1.49.0"
+  }
+}

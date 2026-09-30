@@ -1,0 +1,5 @@
+# host-vendored ansible collections (feed to build-box-iso.sh --collections-dir)
+.collections/
+
+# qemu test scratch
+test/.vagrant/

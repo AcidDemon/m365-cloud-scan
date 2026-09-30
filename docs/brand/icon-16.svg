@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 32 32" role="img" aria-label="M365 Cloud Scan">
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M8.5 28.5h15a1.5 1.5 0 0 0 1.5-1.5V9.6L19.4 3.5H8.5A1.5 1.5 0 0 0 7 5v22a1.5 1.5 0 0 0 1.5 1.5z" stroke="#DBDEE4" stroke-width="2.6"/>
+    <path d="M3.5 15h25" stroke="#EBA335" stroke-width="3.6"/>
+  </g>
+</svg>
