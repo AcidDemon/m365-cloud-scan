@@ -136,7 +136,7 @@ nav a .b.hot{color:var(--err-ink)}
 .statbox .l.warn span:last-child{color:var(--amber-ink)}
 .statbox .l.bad i{background:var(--err);box-shadow:0 0 7px var(--err)}
 .statbox .l.bad span:last-child{color:var(--err-ink)}
-.sfoot{padding:12px 12px 14px;color:var(--dim2);font:400 10.5px/1.6 var(--mono);word-break:break-all;flex:0 0 auto}
+.sfoot{padding:12px 12px 14px;color:var(--dim2);font:400 10.5px/1.6 var(--mono);overflow-wrap:anywhere;flex:0 0 auto}
 main{min-width:0;overflow-y:auto;padding:24px 32px 80px}
 .wrap{max-width:1180px;margin:0 auto}
 .view{display:none}
@@ -689,13 +689,16 @@ html[data-theme="light"] .lnk.flow .fdot{box-shadow:0 0 6px 1px rgba(235,163,53,
       <section class="card">
         <h2><span data-i18n="recentActivity">Recent activity</span></h2>
         <div class="tw">
-          <table style="table-layout:fixed">
+          <!-- Status and Time get fixed widths: the widest pill (DE "Fehlgeschlagen")
+               and a date need them, and a percentage left the pill on top of the
+               time in the two-column layout. Below 500px the table scrolls. -->
+          <table style="table-layout:fixed;min-width:500px">
             <thead>
               <tr>
-                <th style="width:40%" data-i18n="thFile">File</th>
-                <th style="width:28%" data-i18n="thShare">Share</th>
-                <th style="width:18%" data-i18n="thStatus">Status</th>
-                <th style="width:14%" class="num" data-i18n="thTime">Time</th>
+                <th data-i18n="thFile">File</th>
+                <th data-i18n="thShare">Share</th>
+                <th style="width:150px" data-i18n="thStatus">Status</th>
+                <th style="width:96px" class="num" data-i18n="thTime">Time</th>
               </tr>
             </thead>
             <tbody id="recentrows"></tbody>
@@ -2262,6 +2265,10 @@ function backoffText(attempts){
 function isZero(iso){ if (!iso) return true; var d = new Date(iso); return isNaN(d) || d.getFullYear() < 1971; }
 function fmtTime(iso){ if (isZero(iso)) return '-'; var d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
 function fmtDate(iso){ if (isZero(iso)) return '-'; var d = new Date(iso); return pad(d.getDate()) + '.' + pad(d.getMonth() + 1) + '.' + d.getFullYear(); }
+/* activity lists span days, and a bare time cannot say which one */
+function fmtDay(iso){ return isZero(iso) ? '-' : new Date(iso).toDateString() === new Date().toDateString() ? t('histToday') : fmtDate(iso); }
+function fmtWhen(iso){ return isZero(iso) ? '-' : fmtDay(iso) + ' ' + fmtTime(iso); }
+function whenCell(cls, iso){ return A(E('td', cls), E('div', 'name mono-dim', fmtTime(iso)), E('div', 'sub', fmtDay(iso))); }
 function fmtAgo(iso){
   if (isZero(iso)) return t('never');
   var s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
@@ -2484,7 +2491,7 @@ function renderChrome(){
   A(clr($('sfoot')),
     T(location.host), E('br'),
     T(tp('sfSamba', STATE.smb.version || '-', STATE.smb.running ? t('smbdRunning') : t('smbdStopped'))), E('br'),
-    T(tp('lastActivity', last ? fmtTime(last.at) : '-')));
+    T(tp('lastActivity', last ? fmtWhen(last.at) : '-')));
   $('mh_host').textContent = location.host;
 }
 
@@ -2590,7 +2597,7 @@ function renderFlow(){
   // which left the wire running until midnight after a single scan.
   rail.appendChild(lnk(uploading > 0, num(today), t('lnkToday')));
   rail.appendChild(flowNode('cloud', t('flSharePoint'), num(today), t('lnkToday'),
-    tp('flLastUpload', lastSuccess ? fmtTime(lastSuccess) : t('never')), today ? 'done' : ''));
+    tp('flLastUpload', lastSuccess ? fmtWhen(lastSuccess) : t('never')), today ? 'done' : ''));
 
   $('flowlegend').textContent = !tn.connected ? t('flLegendStopped')
     : (pending || uploading) ? t('flLegendOk') : t('flLegendIdle');
@@ -2689,7 +2696,7 @@ function renderDashboard(){
     var share = E('td');
     A(share, E('div', 'name', r.share), E('div', 'sub', r.dest || '-'));
     rt.appendChild(A(E('tr'), file, share, A(E('td'), statusPill(r.status)),
-        td('num mono-dim nowrap', fmtTime(r.at))));
+        whenCell('num nowrap', r.at)));
   });
 
   $('slabcount').textContent = tp('slabCount', STATE.routes.length, STATE.shares.length);
@@ -2750,7 +2757,7 @@ function renderDashboard(){
     E('span', null, location.host),
     E('span', null, tp('footSamba', STATE.smb.version || '-')),
     E('span', null, tp('footShares', STATE.shares.length, STATE.routes.length)),
-    E('span', null, tp('lastActivity', (s.recent || [])[0] ? fmtTime(s.recent[0].at) : '-')));
+    E('span', null, tp('lastActivity', (s.recent || [])[0] ? fmtWhen(s.recent[0].at) : '-')));
 }
 function certNote(iso){
   if (isZero(iso)) return t('certUnknown');
@@ -2949,8 +2956,8 @@ function renderDone(){
   }
   rows.forEach(function(r){
     var tr = E('tr');
-    A(tr, td(null, r.file), td(null, r.share), td('mono-dim small', r.dest || '-'),
-        A(E('td'), statusPill(r.status)), td('mono-dim', fmtTime(r.at)));
+    A(tr, A(E('td'), E('div', 'name', r.file)), A(E('td'), E('div', 'name', r.share)), td('mono-dim small', r.dest || '-'),
+        A(E('td'), statusPill(r.status)), whenCell('nowrap', r.at));
     tb.appendChild(tr);
   });
 }
@@ -2980,7 +2987,7 @@ function renderQueue(ids, actionable){
       A(state, pill(STPILL[l.state] || 'off', t('sl_' + l.state, l.state)), T(' '),
         E('span', 'small mono-dim', l.state === 'retrying'
           ? tp('nextAttempt', fmtTime(l.nextAttempt)) + (l.transient ? tp(l.transient === 1 ? 'outage1' : 'outageN', num(l.transient)) : '')
-          : (l.state === 'pending' ? tp('stabDelay', fmtDur(sh && sh.rules && sh.rules.stabilityDelay)) : fmtTime(it.discovered))));
+          : (l.state === 'pending' ? tp('stabDelay', fmtDur(sh && sh.rules && sh.rules.stabilityDelay)) : fmtWhen(it.discovered))));
     }
     if (l.lastError){
       // OPEN keeps an expanded error open through the five-second redraw.
