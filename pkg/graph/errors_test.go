@@ -21,24 +21,18 @@ func TestClassifyThrottle(t *testing.T) {
 		if !errors.As(err, &tr) {
 			t.Fatalf("status %d: want *transfer.Transient, got %T", status, err)
 		}
-		if !tr.Throttle {
-			t.Errorf("status %d: want Throttle=true", status)
-		}
 		if tr.RetryAfter != 2*time.Second {
 			t.Errorf("status %d: RetryAfter=%v want 2s", status, tr.RetryAfter)
 		}
 	}
 }
 
-func TestClassifyServerErrorsAreTransientNoThrottle(t *testing.T) {
+func TestClassifyServerErrorsAreTransient(t *testing.T) {
 	for _, status := range []int{500, 502, 504} {
 		err := classify(status, "", &APIError{Status: status})
 		var tr *transfer.Transient
 		if !errors.As(err, &tr) {
 			t.Fatalf("status %d: want *transfer.Transient, got %T", status, err)
-		}
-		if tr.Throttle {
-			t.Errorf("status %d: want Throttle=false", status)
 		}
 	}
 }

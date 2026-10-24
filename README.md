@@ -28,8 +28,10 @@ copy in Finance and another in the archive without scanning twice.
 That fan-out is also why deletion is a property of the file rather than of an upload. A scanned page
 that gets deleted without arriving is gone, and no amount of retry logic brings it back, so the local
 file survives until every route it owes a copy to has confirmed a driveItem with a matching size.
-A route that exhausts its retries moves the file to a quarantine directory and says so in the UI.
-It never deletes.
+An outage (DNS, network, Graph or Entra ID busy or down) is retried after 15 seconds, doubling to every 8
+minutes, for as long as it lasts. A file that cannot be delivered as it stands (Graph refuses the
+destination, the file is empty, the route is gone) moves to a quarantine directory at once. Any other
+failure does so once the route's retry budget is spent. The UI shows which. It never deletes.
 
 ## Setup runs in the browser
 

@@ -141,6 +141,10 @@ type Leg struct {
 	UploadedAt  time.Time `json:"uploadedAt,omitzero"`
 	// Sent is bytes transferred so far, for the progress bar in the UI.
 	Sent int64 `json:"sent"`
+	// Transient counts failures that were an outage rather than a problem with
+	// the scan or the destination, so they did not use the route's retry budget.
+	// Together with Attempts it sets how long the next wait is.
+	Transient int `json:"transient,omitempty"`
 }
 
 // Item is one scanned file and every route it owes a copy to.

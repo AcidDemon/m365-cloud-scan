@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -47,10 +50,13 @@ type fakeGraph struct {
 	conflicts map[string]string // itemPath -> conflictBehavior
 	firstAt   map[string]int64  // itemPath -> offset of the first chunk PUT
 	deleted   []string
-	badDrive  string // every upload session for this drive fails with 500
-	failNext  int    // fail this many more upload sessions with 500
-	sizeDelta int64  // fudge the size in the completion body
-	n         int
+	// badDrive confirms every upload one byte short, a failure that uses the
+	// route's retry budget.
+	badDrive     string
+	failFolders  []int // statuses for the next folder creations
+	failSessions []int // statuses for the next createUploadSession calls
+	failChunks   []int // statuses for the next chunk PUTs
+	n            int
 }
 
 func newFakeGraph(t *testing.T) *fakeGraph {
@@ -89,6 +95,11 @@ func (f *fakeGraph) handle(w http.ResponseWriter, r *http.Request) {
 			parent = ""
 		}
 		key := path2(drive, parent, body.Name)
+		if len(f.failFolders) > 0 {
+			w.WriteHeader(f.failFolders[0])
+			f.failFolders = f.failFolders[1:]
+			return
+		}
 		if f.folders[key] {
 			w.WriteHeader(http.StatusConflict)
 			_, _ = io.WriteString(w, `{"error":{"code":"nameAlreadyExists"}}`)
@@ -105,11 +116,13 @@ func (f *fakeGraph) handle(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		f.conflicts[itemPath] = body.Item["@microsoft.graph.conflictBehavior"]
-		if drive == f.badDrive || f.failNext > 0 {
-			if f.failNext > 0 {
-				f.failNext--
+		if len(f.failSessions) > 0 {
+			status := f.failSessions[0]
+			f.failSessions = f.failSessions[1:]
+			if status == http.StatusTooManyRequests {
+				w.Header().Set("Retry-After", "120")
 			}
-			w.WriteHeader(http.StatusInternalServerError)
+			w.WriteHeader(status)
 			return
 		}
 		f.n++
@@ -126,6 +139,11 @@ func (f *fakeGraph) upload(w http.ResponseWriter, r *http.Request, id string) {
 	s, ok := f.sessions[id]
 	if !ok {
 		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+	if len(f.failChunks) > 0 {
+		w.WriteHeader(f.failChunks[0])
+		f.failChunks = f.failChunks[1:]
 		return
 	}
 	var start, end, total int64
@@ -151,9 +169,12 @@ func (f *fakeGraph) upload(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	f.files[s.drive+"/"+s.path] = s.buf
+	if s.drive == f.badDrive {
+		total--
+	}
 	w.WriteHeader(http.StatusCreated)
 	fmt.Fprintf(w, `{"id":"di-%s","name":%q,"size":%d,"webUrl":"https://sp/%s"}`,
-		id, filepath.Base(s.path), total+f.sizeDelta, s.path)
+		id, filepath.Base(s.path), total, s.path)
 }
 
 func (f *fakeGraph) file(key string) ([]byte, bool) {
@@ -352,7 +373,7 @@ func TestRetryRestoresFromQuarantine(t *testing.T) {
 	if !r.item(it.ID).Quarantined {
 		t.Fatal("expected quarantine after a single-attempt budget")
 	}
-	r.g.badDrive = "" // the tenant fixed the permissions
+	r.g.badDrive = "" // whatever SharePoint got wrong is fixed
 
 	if err := r.e.Retry(it.ID); err != nil {
 		t.Fatalf("Retry: %v", err)
@@ -379,13 +400,13 @@ func TestRetryRestoresFromQuarantine(t *testing.T) {
 
 func TestTransientFailureKeepsTheFileAndRetries(t *testing.T) {
 	r := newRig(t, true)
-	r.g.failNext = 1 // one HTTP 500 on createUploadSession
+	r.g.failSessions = []int{http.StatusInternalServerError}
 	rt := r.route("d1", "", "", "", 0)
 	it, _ := r.queue("scan004.pdf", 1024, rt)
 
 	r.once()
 	got := r.item(it.ID)
-	if got.Legs[0].State != model.LegRetrying || got.Legs[0].Attempts != 1 {
+	if l := got.Legs[0]; l.State != model.LegRetrying || l.Attempts != 0 || l.Transient != 1 {
 		t.Fatalf("leg = %+v", got.Legs[0])
 	}
 	if !exists(t, it.Path) {
@@ -402,9 +423,192 @@ func TestTransientFailureKeepsTheFileAndRetries(t *testing.T) {
 	}
 }
 
+// dnsDown is the customer's outage: the resolver cannot find Graph at all.
+type dnsDown struct{}
+
+func (dnsDown) RoundTrip(r *http.Request) (*http.Response, error) {
+	return nil, &net.DNSError{Err: "no such host", Name: r.URL.Hostname(), IsNotFound: true}
+}
+
+// The incident behind this test: DNS stopped resolving and every scan was
+// quarantined within half a minute. An outage says nothing about the scan, so
+// the leg waits it out past the route's budget and the file stays in the share.
+func TestOutageRetriesPastTheBudget(t *testing.T) {
+	r := newRig(t, true)
+	r.e.gc.Set(graph.NewClient(&http.Client{Transport: dnsDown{}}, "", staticToken("t")))
+	rt := r.route("d1", "", "", "", 1)
+	it, _ := r.queue("scan-dns.pdf", 1024, rt)
+
+	for range 3 {
+		r.once()
+		time.Sleep(5 * time.Millisecond) // clear NextAttempt
+	}
+
+	got := r.item(it.ID)
+	if l := got.Legs[0]; l.State != model.LegRetrying || l.Attempts != 0 || l.Transient != 3 {
+		t.Fatalf("leg = %+v", l)
+	}
+	if !strings.Contains(got.Legs[0].LastError, "no such host") {
+		t.Errorf("lastError = %q", got.Legs[0].LastError)
+	}
+	if got.Quarantined || !exists(t, it.Path) {
+		t.Fatal("an outage must leave the scan in the share")
+	}
+	if err := r.e.Retry(it.ID); err != nil {
+		t.Fatal(err)
+	}
+	if l := r.item(it.ID).Legs[0]; l.Transient != 0 || l.State != model.LegPending {
+		t.Errorf("an admin retry should start the leg over: %+v", l)
+	}
+}
+
+// The tenant can drop out between Once looking and the leg running.
+func TestDisconnectMidPassWaits(t *testing.T) {
+	r := newRig(t, true)
+	rt := r.route("d1", "", "", "", 1)
+	it, _ := r.queue("scan-nc.pdf", 64, rt)
+	r.e.gc.Set(nil)
+
+	r.e.runLeg(context.Background(), r.item(it.ID), 0, nopProgress{})
+
+	if l := r.item(it.ID).Legs[0]; l.State != model.LegRetrying || l.Attempts != 0 || l.Transient != 1 {
+		t.Fatalf("leg = %+v", l)
+	}
+}
+
+// Graph refusing the destination does not improve with time, so the admin
+// should hear about it now rather than after the budget runs out.
+func TestRefusedDestinationQuarantinesAtOnce(t *testing.T) {
+	for _, call := range []string{"folder", "session"} {
+		t.Run(call, func(t *testing.T) {
+			r := newRig(t, true)
+			if call == "folder" {
+				r.g.failFolders = []int{http.StatusForbidden}
+			} else {
+				r.g.failSessions = []int{http.StatusForbidden}
+			}
+			rt := r.route("d1", "Scans", "", "", 0)
+			it, _ := r.queue("scan-403.pdf", 512, rt)
+
+			r.once()
+
+			got := r.item(it.ID)
+			if l := got.Legs[0]; l.State != model.LegQuarantined || l.Attempts != 1 {
+				t.Fatalf("leg = %+v", l)
+			}
+			if !got.Quarantined {
+				t.Error("the item should be flagged quarantined")
+			}
+		})
+	}
+}
+
+func TestThrottleWaitsAsLongAsGraphAsks(t *testing.T) {
+	r := newRig(t, true)
+	r.g.failSessions = []int{http.StatusTooManyRequests} // Retry-After: 120
+	rt := r.route("d1", "", "", "", 1)
+	it, _ := r.queue("scan-429.pdf", 512, rt)
+
+	r.once()
+
+	l := r.item(it.ID).Legs[0]
+	if l.State != model.LegRetrying || l.Attempts != 0 {
+		t.Fatalf("leg = %+v", l)
+	}
+	if wait := time.Until(l.NextAttempt); wait < 110*time.Second {
+		t.Errorf("next attempt in %v, Graph asked for 120s", wait)
+	}
+}
+
+func TestOutageBackoffGrowsThenLevelsOff(t *testing.T) {
+	r := newRig(t, true)
+	r.e.opt.Retry = config.RetryPolicy{MaxAttempts: 1, BaseDelay: time.Minute, MaxDelay: 4 * time.Minute}
+	rt := r.route("d1", "", "", "", 1)
+	it, _ := r.queue("scan-backoff.pdf", 64, rt)
+	outage := &transfer.Transient{Err: &net.DNSError{Err: "no such host", Name: "graph.microsoft.com", IsNotFound: true}}
+
+	for _, want := range []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 4 * time.Minute} {
+		before := time.Now()
+		r.e.fail(r.item(it.ID), 0, rt, outage, false)
+		if gap := r.item(it.ID).Legs[0].NextAttempt.Sub(before); gap < want || gap > want+time.Second {
+			t.Errorf("waited %v, want %v", gap, want)
+		}
+	}
+}
+
+// An upload session that expired mid-file is a 404 on the chunk, not a refused
+// destination: a fresh session usually fixes it.
+func TestExpiredUploadSessionUsesTheBudget(t *testing.T) {
+	r := newRig(t, true)
+	r.g.failChunks = []int{http.StatusNotFound}
+	rt := r.route("d1", "", "", "", 2)
+	it, _ := r.queue("scan-expired.pdf", 512, rt)
+
+	r.once()
+
+	if l := r.item(it.ID).Legs[0]; l.State != model.LegRetrying || l.Attempts != 1 || l.Transient != 0 {
+		t.Fatalf("leg = %+v", l)
+	}
+}
+
+// Retries inside one upload must not inherit the minutes-long leg schedule, or
+// a worker and the route Test button sit on one chunk for that long.
+func TestChunkRetriesStayShort(t *testing.T) {
+	r := newRig(t, true)
+	r.e.opt.Retry.MaxAttempts = 2
+	r.e.opt.Retry.BaseDelay, r.e.opt.Retry.MaxDelay = time.Minute, time.Minute
+	r.g.failChunks = []int{http.StatusInternalServerError}
+	rt := r.route("d1", "", "", "", 0)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := r.e.TestRoute(ctx, rt.ID); err != nil {
+		t.Fatalf("TestRoute: %v", err)
+	}
+}
+
+func TestOutagesAndRefusalsAreToldApart(t *testing.T) {
+	dns := &url.Error{Op: "Post", URL: "https://graph.microsoft.com/v1.0/drives", Err: &net.OpError{
+		Op: "dial", Net: "tcp", Err: &net.DNSError{Err: "no such host", Name: "graph.microsoft.com", IsNotFound: true}}}
+	api := func(status int) error { return &graph.APIError{Status: status} }
+	// A real open error, because the syscall.Errno inside it is what once
+	// passed for a network error.
+	_, missing := os.Open(filepath.Join(t.TempDir(), "missing.pdf"))
+	// http.NewRequest reports a path it cannot parse as a *url.Error too.
+	_, unparsable := http.NewRequest(http.MethodPost, "https://graph.microsoft.com/v1.0/drives/d/root:/Rechnung 100%.pdf:/createUploadSession", nil)
+	for _, tc := range []struct {
+		name                string
+		err                 error
+		transient, rejected bool
+	}{
+		{"DNS failure from Graph", &transfer.Transient{Err: dns}, true, false},
+		{"DNS failure fetching a token", fmt.Errorf("graph: acquire token: auth: reach Entra ID: %w", dns), true, false},
+		{"box not connected", errNotConnected, true, false},
+		{"shutdown", fmt.Errorf("upload: %w", context.Canceled), true, false},
+		{"throttled", &transfer.Transient{Err: api(http.StatusTooManyRequests), RetryAfter: time.Minute}, true, false},
+		{"Entra unavailable", fmt.Errorf("graph: acquire token: %w", &transfer.Transient{Err: errors.New("RESPONSE 503")}), true, false},
+		{"bad gateway", &transfer.Transient{Err: api(http.StatusBadGateway)}, true, false},
+		{"file locked", api(http.StatusLocked), true, false},
+		{"request timeout", api(http.StatusRequestTimeout), true, false},
+		{"quota full", api(http.StatusInsufficientStorage), true, false},
+		{"unparsable path", unparsable, false, false},
+		{"folder forbidden", fmt.Errorf("create folder %q: %w", "Scans", api(http.StatusForbidden)), false, true},
+		{"library gone", api(http.StatusNotFound), false, true},
+		{"token refused", fmt.Errorf("graph: acquire token: %w", errors.New("AADSTS700027")), false, false},
+		{"local file", fmt.Errorf("open: %w", missing), false, false},
+	} {
+		if got := transient(tc.err); got != tc.transient {
+			t.Errorf("%s: transient = %v", tc.name, got)
+		}
+		if got := rejected(tc.err); got != tc.rejected {
+			t.Errorf("%s: rejected = %v", tc.name, got)
+		}
+	}
+}
+
 func TestSizeMismatchIsNotAConfirmation(t *testing.T) {
 	r := newRig(t, true)
-	r.g.sizeDelta = -1 // SharePoint reports one byte short
+	r.g.badDrive = "d1" // SharePoint reports one byte short
 	rt := r.route("d1", "", "", "", 0)
 	it, _ := r.queue("scan005.pdf", 1024, rt)
 

@@ -49,7 +49,7 @@ func TestClientDoThrottleOn429(t *testing.T) {
 	c := NewClient(srv.Client(), srv.URL, staticToken("x"))
 	_, err := c.do(context.Background(), http.MethodGet, "/x", nil, nil)
 	var tr *transfer.Transient
-	if !errors.As(err, &tr) || !tr.Throttle || tr.RetryAfter != 3*time.Second {
+	if !errors.As(err, &tr) || tr.RetryAfter != 3*time.Second {
 		t.Fatalf("want throttle Transient w/ 3s, got %T %v", err, err)
 	}
 }

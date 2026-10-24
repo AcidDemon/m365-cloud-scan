@@ -33,11 +33,9 @@ func Backoff(p config.RetryPolicy, attempt int, frac float64) time.Duration {
 }
 
 // Transient marks a retryable failure. RetryAfter (if > 0) overrides Backoff.
-// Throttle (429/503) waits RetryAfter but does NOT consume the attempt budget.
 type Transient struct {
 	Err        error
 	RetryAfter time.Duration
-	Throttle   bool
 }
 
 func (e *Transient) Error() string {
@@ -49,8 +47,7 @@ func (e *Transient) Error() string {
 
 func (e *Transient) Unwrap() error { return e.Err }
 
-// Operation performs one attempt; attempt is 1-based and counts only
-// non-throttle attempts.
+// Operation performs one attempt; attempt is 1-based.
 type Operation func(ctx context.Context, attempt int) error
 
 // Clock is the sleep dependency, injectable for tests.
@@ -72,21 +69,20 @@ func (realClock) Sleep(ctx context.Context, d time.Duration) error {
 }
 
 // Do retries op per the policy. A non-Transient error is terminal and returned
-// immediately; a Transient waits (RetryAfter or Backoff) then retries; a
-// Throttle waits but does NOT consume the attempt budget; exhausting
-// MaxAttempts returns the last error. Callers SHOULD pass a ctx with a deadline
-// so persistent throttling cannot loop forever.
+// immediately; a Transient waits (RetryAfter or Backoff) then retries, and
+// every one counts toward MaxAttempts, so persistent throttling cannot hold the
+// caller forever. Exhausting MaxAttempts returns the last error, and so does a
+// RetryAfter longer than MaxDelay: the caller schedules that wait itself
+// instead of sleeping on it here.
 func Do(ctx context.Context, p config.RetryPolicy, op Operation) error {
 	return doWith(ctx, p, op, realClock{}, rand.Float64)
 }
 
 func doWith(ctx context.Context, p config.RetryPolicy, op Operation, clk Clock, frac func() float64) error {
-	attempt := 0
-	for {
+	for attempt := 1; ; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		attempt++
 		err := op(ctx, attempt)
 		if err == nil {
 			return nil
@@ -95,14 +91,12 @@ func doWith(ctx context.Context, p config.RetryPolicy, op Operation, clk Clock, 
 		if !errors.As(err, &tr) {
 			return err // terminal
 		}
+		if attempt >= p.MaxAttempts || tr.RetryAfter > p.MaxDelay {
+			return err
+		}
 		wait := tr.RetryAfter
 		if wait <= 0 {
 			wait = Backoff(p, attempt, frac())
-		}
-		if tr.Throttle {
-			attempt-- // throttling does not consume the budget
-		} else if attempt >= p.MaxAttempts {
-			return err // budget exhausted; surface the last transient error
 		}
 		if serr := clk.Sleep(ctx, wait); serr != nil {
 			return serr

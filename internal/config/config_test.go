@@ -41,10 +41,10 @@ func TestLoadDefaults(t *testing.T) {
 	if c.RescanInterval != 5*time.Minute {
 		t.Errorf("rescanInterval = %v", c.RescanInterval)
 	}
-	// Quick first retries for the person waiting at the MFP, a tail long enough
-	// to ride out a short Graph outage: 2s, 4s, 8s up to 256s.
-	if c.RetryPolicy.MaxAttempts != 8 || c.RetryPolicy.BaseDelay != 2*time.Second ||
-		c.RetryPolicy.MaxDelay != 5*time.Minute || c.RetryPolicy.Jitter != 0.2 ||
+	// The leg schedule: 15s doubling to a cap of 8 minutes, short enough that a
+	// scan lands soon after an outage ends.
+	if c.RetryPolicy.MaxAttempts != 8 || c.RetryPolicy.BaseDelay != 15*time.Second ||
+		c.RetryPolicy.MaxDelay != 8*time.Minute || c.RetryPolicy.Jitter != 0.2 ||
 		c.RetryPolicy.ChunkSize != 5*1024*1024 {
 		t.Errorf("retry = %+v", c.RetryPolicy)
 	}
@@ -75,7 +75,7 @@ func TestLoadOverrides(t *testing.T) {
 		t.Errorf("file values lost: %+v", c)
 	}
 	// A partial retry block overlays the default.
-	if c.RetryPolicy.MaxAttempts != 9 || c.RetryPolicy.BaseDelay != time.Second || c.RetryPolicy.MaxDelay != 5*time.Minute {
+	if c.RetryPolicy.MaxAttempts != 9 || c.RetryPolicy.BaseDelay != time.Second || c.RetryPolicy.MaxDelay != 8*time.Minute {
 		t.Errorf("retry = %+v", c.RetryPolicy)
 	}
 }

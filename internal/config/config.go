@@ -214,14 +214,17 @@ func SaveTenant(path string, t Tenant, certPEM string) error {
 	return os.WriteFile(path, b, 0o600)
 }
 
-// defaultRetryPolicy is faster off the mark than the shipped default and gives
-// up later: someone waits at the MFP for the scan to appear, and a short Graph
-// outage must not quarantine good scans. The delays double from 2s to 256s.
+// defaultRetryPolicy is the schedule a failed leg waits on: 15s, 30s, 1m, 2m,
+// 4m, then every 8 minutes. An outage retries on it for as long as it lasts, so
+// the cap is short on purpose: someone may be waiting at the MFP, and the scan
+// should land within minutes of the network coming back. MaxAttempts is not the
+// leg budget (each route sets its own); it bounds the tries of one chunk inside
+// an upload, where the engine also clamps the delays to seconds.
 func defaultRetryPolicy() pkgconfig.RetryPolicy {
 	p := pkgconfig.DefaultRetryPolicy()
 	p.MaxAttempts = 8
-	p.BaseDelay = 2 * time.Second
-	p.MaxDelay = 5 * time.Minute
+	p.BaseDelay = 15 * time.Second
+	p.MaxDelay = 8 * time.Minute
 	p.Jitter = 0.2
 	return p
 }

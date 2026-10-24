@@ -30,7 +30,7 @@ func classify(status int, retryAfter string, apiErr *APIError) error {
 	}
 	switch status {
 	case http.StatusTooManyRequests, http.StatusServiceUnavailable:
-		return &transfer.Transient{Err: apiErr, RetryAfter: parseRetryAfter(retryAfter), Throttle: true}
+		return &transfer.Transient{Err: apiErr, RetryAfter: parseRetryAfter(retryAfter)}
 	case http.StatusInternalServerError, http.StatusBadGateway, http.StatusGatewayTimeout:
 		return &transfer.Transient{Err: apiErr}
 	default:

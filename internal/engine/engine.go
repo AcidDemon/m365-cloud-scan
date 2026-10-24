@@ -4,7 +4,10 @@
 // The failure asymmetry runs the other way round from a print queue: re-sending
 // bytes costs a retry, but a scan deleted before it landed is gone for good.
 // So every failure path here keeps the file: a leg that gives up moves it to
-// quarantine, it never unlinks. An upload counts as confirmed only when Graph
+// quarantine, it never unlinks. An outage (network, Graph 5xx, throttling, the
+// box not connected) never gives up, because it says nothing about the scan.
+// Graph refusing the destination gives up at once, and everything else uses
+// the route's retry budget. An upload counts as confirmed only when Graph
 // hands back a driveItem whose id is set and whose size matches the bytes on
 // disk.
 package engine
@@ -17,6 +20,9 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
+	"net"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,18 +33,19 @@ import (
 	"github.com/AcidDemon/m365-cloud-scan/internal/model"
 	"github.com/AcidDemon/m365-cloud-scan/internal/store"
 	"github.com/AcidDemon/m365-cloud-scan/pkg/config"
+	"github.com/AcidDemon/m365-cloud-scan/pkg/graph"
 	"github.com/AcidDemon/m365-cloud-scan/pkg/transfer"
 )
 
-// defaultMaxAttempts is how many times a leg may fail before its file is
-// quarantined, when the route does not say.
+// defaultMaxAttempts is how many times a leg may fail for a reason other than
+// an outage before its file is quarantined, when the route does not say.
 const defaultMaxAttempts = 5
 
 // notConnectedEvery is how often an un-onboarded box repeats that it is waiting.
 const notConnectedEvery = 15 * time.Minute
 
-// errNotConnected is a terminal-looking error that must never consume the retry
-// budget: the fix is onboarding the box, not trying again.
+// errNotConnected counts as an outage, so it never consumes the retry budget:
+// the leg waits until someone connects the box again.
 var errNotConnected = errors.New("the box is not connected to Microsoft 365")
 
 type Options struct {
@@ -236,27 +243,31 @@ func (e *Engine) runLeg(ctx context.Context, it model.Item, i int, prog transfer
 
 	gc := e.gc.Get()
 	if gc == nil {
-		e.fail(it, i, rt, errNotConnected, true)
+		e.fail(it, i, rt, errNotConnected, false)
 		return
 	}
+	// A 4xx here is Graph refusing the destination itself: the library is gone,
+	// the grant was revoked, the path is invalid. Waiting does not change that.
 	folder := model.DestPath(dest, rt, it.Discovered, share.Name)
 	if err := gc.EnsureFolderPath(ctx, dest.DriveID, folder); err != nil {
-		e.fail(it, i, rt, fmt.Errorf("create folder %q: %w", folder, err), false)
+		e.fail(it, i, rt, fmt.Errorf("create folder %q: %w", folder, err), rejected(err))
 		return
 	}
 	sess, err := gc.CreateUploadSessionConflict(ctx, dest.DriveID, joinPath(folder, it.Name), conflictBehavior(rt.Conflict))
 	if err != nil {
-		e.fail(it, i, rt, err, false)
+		e.fail(it, i, rt, err, rejected(err))
 		return
 	}
 
 	e.setLeg(it.ID, i, func(l *model.Leg) { l.State = model.LegUploading })
 	// ponytail: the offset survives a crash but the session URL does not, so a
 	// resume into a fresh session can only fail the size check below, never fake
-	// a success. Persist the upload URL on the leg if real resume is wanted.
+	// a success. It also means a chunk throttled for longer than chunkRetry's
+	// MaxDelay restarts the file from byte 0 after the wait. Persist the upload
+	// URL on the leg if real resume is wanted.
 	key := progressKey(it.ID, rt.ID)
 	sent := func(n int64) { e.setLeg(it.ID, i, func(l *model.Leg) { l.Sent = n }) }
-	if err := transfer.Upload(ctx, e.opt.Retry, key, f, size, tracker{sess, sent}, prog); err != nil {
+	if err := transfer.Upload(ctx, e.chunkRetry(), key, f, size, tracker{sess, sent}, prog); err != nil {
 		// The dead session's offset would poison the next attempt, which opens a
 		// fresh session that has none of these bytes.
 		_ = prog.Clear(key)
@@ -284,26 +295,47 @@ func (e *Engine) runLeg(ctx context.Context, it model.Item, i int, prog transfer
 
 // fail records a failed leg. Nothing here deletes the file: a leg out of
 // attempts quarantines it instead, and the item's other legs carry on against
-// the moved path.
+// the moved path. An outage never quarantines and does not use the budget; it
+// only lengthens the wait, which e.opt.Retry caps unless Graph's Retry-After
+// asks for longer.
 func (e *Engine) fail(it model.Item, i int, rt model.Route, cause error, terminal bool) {
 	max := rt.MaxAttempts
 	if max <= 0 {
 		max = defaultMaxAttempts
 	}
+	outage := !terminal && transient(cause)
 	var gaveUp bool
+	var next time.Time
 	e.setLeg(it.ID, i, func(l *model.Leg) {
-		l.Attempts++
 		l.LastError = cause.Error()
-		if terminal || l.Attempts >= max {
-			l.State = model.LegQuarantined
-			gaveUp = true
-			return
+		if outage {
+			l.Transient++
+		} else {
+			l.Attempts++
+			if terminal || l.Attempts >= max {
+				l.State = model.LegQuarantined
+				gaveUp = true
+				return
+			}
+		}
+		wait := transfer.Backoff(e.opt.Retry, l.Attempts+l.Transient, rand.Float64())
+		// Graph's Retry-After is what it needs to recover, so never come back
+		// sooner than that.
+		var tr *transfer.Transient
+		if errors.As(cause, &tr) && tr.RetryAfter > wait {
+			wait = tr.RetryAfter
 		}
 		l.State = model.LegRetrying
-		l.NextAttempt = time.Now().Add(transfer.Backoff(e.opt.Retry, l.Attempts, rand.Float64()))
+		l.NextAttempt = time.Now().Add(wait)
+		next = l.NextAttempt
 	})
+	if outage {
+		e.log.Warn("leg hit an outage, waiting it out without using the retry budget",
+			"item", it.ID, "route", rt.ID, "retryAt", next.Format(time.DateTime), "err", cause)
+		return
+	}
 	if !gaveUp {
-		e.log.Warn("leg failed, will retry", "item", it.ID, "route", rt.ID, "err", cause)
+		e.log.Warn("leg failed, will retry", "item", it.ID, "route", rt.ID, "retryAt", next.Format(time.DateTime), "err", cause)
 		return
 	}
 	e.log.Error("leg gave up, quarantining the scan", "item", it.ID, "route", rt.ID, "err", cause)
@@ -317,6 +349,51 @@ func (e *Engine) fail(it model.Item, i int, rt model.Route, cause error, termina
 			e.record(cur, share, "quarantined", cause.Error())
 		}
 	}
+}
+
+// transient reports whether err is an outage: the network, Graph or the box's
+// own connection is down, and trying again later is all there is to do.
+// http.Client returns DNS, refused and reset connections, timeouts and TLS
+// failures as a *url.Error, and a body cut off mid-read is a *net.OpError. The
+// net.Error interface would be shorter but is wrong: syscall.Errno satisfies
+// it, so a missing or unreadable local file would pass for an outage. A
+// *url.Error from parsing is no outage either: that path will never parse.
+func transient(err error) bool {
+	var tr *transfer.Transient
+	var ue *url.Error
+	var ae *graph.APIError
+	switch {
+	case errors.As(err, &tr), errors.As(err, &ue) && ue.Op != "parse", errors.As(err, new(*net.OpError)),
+		errors.As(err, new(*net.DNSError)), errors.Is(err, errNotConnected),
+		errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
+		return true
+	case errors.As(err, &ae):
+		switch ae.Status {
+		case http.StatusRequestTimeout, http.StatusLocked, http.StatusTooManyRequests:
+			return true
+		}
+		return ae.Status >= 500
+	}
+	return false
+}
+
+// rejected reports whether Graph answered with a 4xx that is not an outage.
+// Only the folder and session calls ask: a 4xx on a chunk is usually an
+// expired session, which a fresh one fixes.
+func rejected(err error) bool {
+	var ae *graph.APIError
+	return errors.As(err, &ae) && ae.Status >= 400 && ae.Status < 500 && !transient(err)
+}
+
+// chunkRetry is e.opt.Retry for the retries inside one upload. The leg
+// schedule waits minutes, and a worker sleeping that long on one chunk holds
+// the progress bar and the route Test button with it. Clamping instead of
+// replacing keeps a faster policy, such as a test's, fast.
+func (e *Engine) chunkRetry() config.RetryPolicy {
+	p, d := e.opt.Retry, config.DefaultRetryPolicy()
+	p.BaseDelay = min(p.BaseDelay, d.BaseDelay)
+	p.MaxDelay = min(p.MaxDelay, d.MaxDelay)
+	return p
 }
 
 // quarantine moves the file out of the share so an operator sees a stalled scan
@@ -455,7 +532,7 @@ func (e *Engine) TestRoute(ctx context.Context, routeID string) error {
 	if err != nil {
 		return err
 	}
-	if err := transfer.Upload(ctx, e.opt.Retry, "probe:"+routeID, bytes.NewReader(body), int64(len(body)), sess, nopProgress{}); err != nil {
+	if err := transfer.Upload(ctx, e.chunkRetry(), "probe:"+routeID, bytes.NewReader(body), int64(len(body)), sess, nopProgress{}); err != nil {
 		return err
 	}
 	di := sess.Item()

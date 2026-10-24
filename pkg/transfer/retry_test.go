@@ -126,21 +126,38 @@ func TestDoExhaustsMaxAttempts(t *testing.T) {
 	}
 }
 
-func TestDoThrottleDoesNotConsumeBudget(t *testing.T) {
+// Throttling that never lets up must still hand the failure back, or it holds
+// the worker, and the scan pass waiting on it, for good.
+func TestDoThrottleUsesBudget(t *testing.T) {
 	calls := 0
 	clk := &fakeClock{}
-	err := doWith(context.Background(), policy(1), func(ctx context.Context, attempt int) error {
+	err := doWith(context.Background(), policy(3), func(ctx context.Context, attempt int) error {
 		calls++
-		if calls <= 2 {
-			return &Transient{Err: errors.New("429"), RetryAfter: 2 * time.Second, Throttle: true}
+		if calls > 10 {
+			return nil // the loop never gave up
 		}
-		return nil
+		return &Transient{Err: errors.New("429"), RetryAfter: 2 * time.Second}
 	}, clk, func() float64 { return 0 })
-	if err != nil || calls != 3 {
-		t.Fatalf("err=%v calls=%d (want 3)", err, calls)
+	if err == nil || calls != 3 {
+		t.Fatalf("err=%v calls=%d (want an error after 3)", err, calls)
 	}
 	if len(clk.slept) != 2 || clk.slept[0] != 2*time.Second {
 		t.Fatalf("expected two 2s Retry-After sleeps, got %v", clk.slept)
+	}
+}
+
+// A Retry-After longer than MaxDelay goes back to the caller, which schedules
+// the next try itself, instead of holding the worker that long.
+func TestDoHandsBackLongRetryAfter(t *testing.T) {
+	calls := 0
+	clk := &fakeClock{}
+	err := doWith(context.Background(), policy(5), func(ctx context.Context, attempt int) error {
+		calls++
+		return &Transient{Err: errors.New("429"), RetryAfter: time.Hour}
+	}, clk, func() float64 { return 0 })
+	var tr *Transient
+	if !errors.As(err, &tr) || tr.RetryAfter != time.Hour || calls != 1 || len(clk.slept) != 0 {
+		t.Fatalf("err=%v calls=%d slept=%v (want the 1h Retry-After back at once)", err, calls, clk.slept)
 	}
 }
 
