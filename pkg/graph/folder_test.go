@@ -73,16 +73,16 @@ func TestEnsureFolderPathCreatesEachSegmentInOrder(t *testing.T) {
 	defer srv.Close()
 
 	c := NewClient(srv.Client(), srv.URL, staticToken("t"))
-	if err := c.EnsureFolderPath(context.Background(), "d1", "Scans/März 2026/Eingang"); err != nil {
+	if err := c.EnsureFolderPath(context.Background(), "d1", "Scans/März #2026/Eingang"); err != nil {
 		t.Fatalf("EnsureFolderPath: %v", err)
 	}
 
 	wantPaths := []string{
 		"/drives/d1/root/children",
 		"/drives/d1/root:/Scans:/children",
-		"/drives/d1/root:/Scans/M%C3%A4rz%202026:/children",
+		"/drives/d1/root:/Scans/M%C3%A4rz%20%232026:/children",
 	}
-	wantNames := []string{"Scans", "März 2026", "Eingang"}
+	wantNames := []string{"Scans", "März #2026", "Eingang"}
 	if len(paths) != len(wantPaths) {
 		t.Fatalf("got %d requests %q, want %d", len(paths), paths, len(wantPaths))
 	}

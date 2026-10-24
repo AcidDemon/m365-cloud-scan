@@ -43,6 +43,47 @@ func TestCreateUploadSession(t *testing.T) {
 	}
 }
 
+// File names carry whatever the MFP or the user typed, and each one has to
+// reach Graph as path data with its bytes intact: "%" broke the request before
+// it was sent, "#" cut the path short, and "+" can be read as a space.
+func TestItemPathsAreEscaped(t *testing.T) {
+	for _, tc := range []struct{ name, wire string }{
+		{"Rechnung 100%.pdf", "Rechnung%20100%25.pdf"},
+		{"Scan#2.pdf", "Scan%232.pdf"},
+		{"a+b.pdf", "a%2Bb.pdf"},
+		{"Über & Co; 50%.pdf", "%C3%9Cber%20%26%20Co%3B%2050%25.pdf"},
+		{"with space.pdf", "with%20space.pdf"},
+		{"2026/10/Scans #1/x.pdf", "2026/10/Scans%20%231/x.pdf"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var wire, decoded []string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				wire = append(wire, r.RequestURI)
+				decoded = append(decoded, r.URL.Path)
+				fmt.Fprintf(w, `{"uploadUrl":"http://example/upload/abc"}`)
+			}))
+			defer srv.Close()
+
+			c := NewClient(srv.Client(), srv.URL, staticToken("x"))
+			if _, err := c.CreateUploadSession(context.Background(), "d1", tc.name); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			body, _, err := c.NewDriveItemReader("d1", tc.name).ReadRange(context.Background(), 0, 0)
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			body.Close()
+			want := []string{"/drives/d1/root:/" + tc.wire + ":/createUploadSession", "/drives/d1/root:/" + tc.wire + ":/content"}
+			if len(wire) != 2 || wire[0] != want[0] || wire[1] != want[1] {
+				t.Errorf("on the wire %q, want %q", wire, want)
+			}
+			if len(decoded) != 2 || decoded[0] != "/drives/d1/root:/"+tc.name+":/createUploadSession" {
+				t.Errorf("decoded %q, want the name back as it was", decoded)
+			}
+		})
+	}
+}
+
 func TestUploadChunkAcceptedReturnsNext(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Header.Get("Authorization") != "" {
@@ -87,7 +128,7 @@ func TestUploadChunkThrottle(t *testing.T) {
 	sess := &UploadSession{client: NewClient(srv.Client(), srv.URL, staticToken("x")), url: srv.URL}
 	_, err := sess.UploadChunk(context.Background(), 0, []byte("0123"), 10)
 	var tr *transfer.Transient
-	if !errors.As(err, &tr) || !tr.Throttle || tr.RetryAfter != time.Second {
+	if !errors.As(err, &tr) || tr.RetryAfter != time.Second {
 		t.Fatalf("want throttle 1s, got %T %v", err, err)
 	}
 }

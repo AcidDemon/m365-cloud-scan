@@ -2,6 +2,7 @@ package graph
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -229,11 +230,21 @@ func TestEscapePathLeavesSeparatorsAlone(t *testing.T) {
 		{"a//b", "a/b"},
 		{"Rechnungen März", "Rechnungen%20M%C3%A4rz"},
 		{"a b/c d", "a%20b/c%20d"},
-		{"Größe & Preis", "Gr%C3%B6%C3%9Fe%20&%20Preis"},
+		{"Größe & Preis", "Gr%C3%B6%C3%9Fe%20%26%20Preis"},
+		{"a+b=c", "a%2Bb%3Dc"},
 	}
 	for _, tt := range tests {
 		if got := escapePath(tt.in); got != tt.want {
 			t.Errorf("escapePath(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// %q is Go quoting, not JSON: a control character comes out as \x01, which no
+// JSON parser accepts.
+func TestFolderBodyIsJSON(t *testing.T) {
+	b, _ := io.ReadAll(folderBody("Scan\x01\xff"))
+	if !json.Valid(b) {
+		t.Fatalf("body %s is not JSON", b)
 	}
 }

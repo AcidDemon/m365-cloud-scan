@@ -47,7 +47,7 @@ func (c *Client) CreateUploadSession(ctx context.Context, driveID, itemPath stri
 // CreateUploadSessionConflict is CreateUploadSession with an explicit Graph
 // conflictBehavior: "replace", "rename" or "fail".
 func (c *Client) CreateUploadSessionConflict(ctx context.Context, driveID, itemPath, conflict string) (*UploadSession, error) {
-	path := fmt.Sprintf("/drives/%s/root:/%s:/createUploadSession", driveID, itemPath)
+	path := "/drives/" + driveID + "/root:/" + escapePath(itemPath) + ":/createUploadSession"
 	body := strings.NewReader(fmt.Sprintf(`{"item":{"@microsoft.graph.conflictBehavior":%q}}`, conflict))
 	resp, err := c.do(ctx, http.MethodPost, path, body, map[string]string{"Content-Type": "application/json"})
 	if err != nil {
@@ -136,7 +136,7 @@ var _ transfer.RangeReader = (*DriveItemReader)(nil)
 func (c *Client) NewDriveItemReader(driveID, itemPath string) *DriveItemReader {
 	return &DriveItemReader{
 		client:      c,
-		contentPath: fmt.Sprintf("/drives/%s/root:/%s:/content", driveID, itemPath),
+		contentPath: "/drives/" + driveID + "/root:/" + escapePath(itemPath) + ":/content",
 	}
 }
 

@@ -107,18 +107,29 @@ func childrenURL(driveID, folderPath string) string {
 }
 
 // escapePath escapes each segment of a library-relative path on its own, so
-// spaces and umlauts survive while the "/" separators (and the ":" delimiters
-// the caller wraps around the result) stay literal.
+// the "/" separators (and the ":" delimiters the caller wraps around the
+// result) stay literal while every other byte that is not RFC 3986 unreserved
+// is percent-encoded. url.PathEscape is not enough: it leaves "+", "&", "=",
+// "$", ":" and "@" alone, and a server that decodes the path like a form reads
+// "+" as a space. Encoding a character that did not need it is always safe.
 func escapePath(p string) string {
-	segs := strings.Split(strings.Trim(p, "/"), "/")
-	out := segs[:0]
-	for _, s := range segs {
+	var b strings.Builder
+	for _, s := range strings.Split(strings.Trim(p, "/"), "/") {
 		if s == "" {
 			continue
 		}
-		out = append(out, url.PathEscape(s))
+		if b.Len() > 0 {
+			b.WriteByte('/')
+		}
+		for i := 0; i < len(s); i++ {
+			if c := s[i]; 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || strings.IndexByte("-._~", c) >= 0 {
+				b.WriteByte(c)
+			} else {
+				fmt.Fprintf(&b, "%%%02X", c)
+			}
+		}
 	}
-	return strings.Join(out, "/")
+	return b.String()
 }
 
 func joinPath(base, name string) string {
@@ -128,9 +139,11 @@ func joinPath(base, name string) string {
 	return base + "/" + name
 }
 
+// folderBody marshals the name as JSON, because %q is Go quoting: it writes
+// control characters and invalid UTF-8 as escapes JSON does not have.
 func folderBody(name string) *strings.Reader {
-	return strings.NewReader(fmt.Sprintf(
-		`{"name":%q,"folder":{},"@microsoft.graph.conflictBehavior":"fail"}`, name))
+	n, _ := json.Marshal(name)
+	return strings.NewReader(`{"name":` + string(n) + `,"folder":{},"@microsoft.graph.conflictBehavior":"fail"}`)
 }
 
 // getPaged GETs a Graph collection and follows @odata.nextLink until the last

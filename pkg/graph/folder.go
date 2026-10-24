@@ -3,7 +3,6 @@ package graph
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"net/http"
 	"path"
@@ -37,13 +36,8 @@ func (c *Client) EnsureFolderPath(ctx context.Context, driveID, folderPath strin
 }
 
 func (c *Client) createFolder(ctx context.Context, driveID, parent, name string) error {
-	url := fmt.Sprintf("/drives/%s/root/children", driveID)
-	if parent != "" {
-		url = fmt.Sprintf("/drives/%s/root:/%s:/children", driveID, parent)
-	}
-	body := strings.NewReader(fmt.Sprintf(
-		`{"name":%q,"folder":{},"@microsoft.graph.conflictBehavior":"fail"}`, name))
-	resp, err := c.do(ctx, http.MethodPost, url, body, map[string]string{"Content-Type": "application/json"})
+	resp, err := c.do(ctx, http.MethodPost, childrenURL(driveID, parent), folderBody(name),
+		map[string]string{"Content-Type": "application/json"})
 	if err != nil {
 		var ae *APIError
 		if errors.As(err, &ae) && ae.Status == http.StatusConflict {
