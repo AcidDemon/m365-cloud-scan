@@ -198,8 +198,18 @@ td .sub{display:block;margin-top:3px;color:var(--dim2);font:400 11px/1.35 var(--
 .pill.bad{background:var(--err-dim);color:var(--err-ink)}
 .pill.bad::before{box-shadow:0 0 6px var(--err)}
 .pill.off{background:var(--raise);color:var(--dim)}
-.err{color:var(--err-ink);font-size:11.5px;line-height:1.5}
+/* Errors quote Graph URLs and paths with nowhere to break, which ran out of their
+   table cell and under the buttons beside it. */
+.err{color:var(--err-ink);font-size:11.5px;line-height:1.5;overflow-wrap:anywhere}
 .err b{font-weight:600}
+.err+.btn{margin-top:10px}
+/* A queue error closed is three lines, so one long failure cannot push its row off
+   the screen; the summary is the browser's own keyboard toggle for the rest. Open,
+   it scrolls after twenty lines, or the row's buttons end up a screen below it. */
+details.err summary{display:block;cursor:pointer}
+details.err summary::-webkit-details-marker{display:none}
+details.err:not([open]) summary{display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden}
+details.err[open] summary{max-height:30em;overflow:auto}
 
 /* ---------- forms ---------- */
 input,select,textarea{font:400 13px/1.4 var(--mono);color:var(--text);background:var(--panel2);
@@ -251,9 +261,15 @@ label.f{display:block;margin:0 0 6px;color:var(--dim);font:600 10px/1.4 var(--sa
 .kpi.lead{grid-column:span 2;--edge:var(--amber)}
 .kpi.lead .kv{font-size:32px;color:var(--amber-ink)}
 .kpi.lead.zero .kv{color:var(--text)}
-/* 14-day sparkline; a bar with no data-v keeps the empty track height */
-.hist{order:2;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;align-items:end;
-  height:26px;margin-top:11px}
+/* 14-day sparkline; a bar with no data-v keeps the empty track height. The top
+   padding is the strip for the scale label, so the bars keep their full height
+   and the label never sits on one. It is 2px taller than the label, or the
+   descenders of "day" and "Tag" touch the tallest bar. */
+.hist{order:2;position:relative;display:grid;grid-auto-flow:column;grid-auto-columns:1fr;gap:3px;align-items:end;
+  height:40px;padding-top:14px;margin-top:11px}
+.hist .ymax{position:absolute;inset:0 0 auto;height:12px;display:flex;align-items:flex-end;gap:6px;
+  color:var(--dim2);font:400 10px/1 var(--mono);white-space:nowrap}
+.hist .ymax::after{content:'';flex:1;border-top:1px dashed var(--line2)}
 /* the trend sits in its own band above the bars: same series, one as the daily
    figure and one as the seven-day average, so a spiky week still reads as a
    rising month */
@@ -261,7 +277,7 @@ label.f{display:block;margin:0 0 6px;color:var(--dim);font:600 10px/1.4 var(--sa
 .trendbox .trend{position:absolute;inset:0;width:100%;height:100%;overflow:visible;pointer-events:none}
 .trendbox .trend polyline{fill:none;stroke:var(--amber);stroke-width:1.5;vector-effect:non-scaling-stroke;
   stroke-linejoin:round;stroke-linecap:round;opacity:.9}
-.kpi.lead .hist{height:24px;margin-top:4px}
+.kpi.lead .hist{height:38px;margin-top:4px}
 .hist i{display:block;height:3px;border-radius:2px;background:var(--raise)}
 .hist i[data-v]{background:linear-gradient(180deg,var(--amber),var(--amber-lo))}
 .kpi .hist+.kd{order:4}
@@ -459,9 +475,16 @@ html[data-theme="light"] .lnk.flow .fdot{box-shadow:0 0 6px 1px rgba(235,163,53,
 .fgrid2>div>.card{margin-bottom:0}
 .fgrid2>div>.card:last-child{flex:1 1 auto}
 .fgridw{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 18px}
+/* A failed request can toast a whole Graph URL or a proxy's error page. It wraps
+   inside the screen and stops at six lines instead of covering the page; the clip
+   sits on the content box, or a seventh line shows through the bottom padding.
+   Shrinking to fit from left:50% would cap it at half the screen, so it sizes to
+   its text up to the screen width. */
 .toast{position:fixed;left:50%;bottom:26px;transform:translateX(-50%) translateY(14px);background:var(--panel);
   border:1px solid var(--line2);border-radius:10px;padding:10px 16px;font-size:12.5px;box-shadow:var(--pop);
-  opacity:0;pointer-events:none;transition:.22s;z-index:99}
+  width:max-content;max-width:min(640px,calc(100vw - 32px));
+  opacity:0;pointer-events:none;transition:.22s;z-index:99;overflow-wrap:anywhere;
+  display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:6;overflow:clip;overflow-clip-margin:content-box}
 .toast.on{opacity:1;transform:translateX(-50%)}
 
 /* ---------- sign-in card + activity indicator ---------- */
@@ -485,7 +508,7 @@ html[data-theme="light"] .lnk.flow .fdot{box-shadow:0 0 6px 1px rgba(235,163,53,
   .stage{padding:11px 12px}
 }
 @media(max-width:1080px){
-  .split,.split21,.fgrid3,.fgrid2,.kvgrid,.rules{grid-template-columns:minmax(0,1fr)}
+  .split,.split21,.fgrid3,.fgrid2,.kvgrid,.rules,.rdetail{grid-template-columns:minmax(0,1fr)}
   .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
   .kpi.lead{grid-column:span 1}
   .picker{grid-template-columns:minmax(0,1fr)}
@@ -1312,7 +1335,7 @@ var I18N = {
     nFileWord:"file", nFilesWord:"files", kOnDisk:"In the share", kAfterwards:"Afterwards", kLastSuccess:"Last success", kLastError:"Last error",
     kFiles:"files",
     deltaWeek:"%1 % on the week before", deltaNew:"first week with uploads", hist14d:"14 days ago", histToday:"today",
-    histAria:"Uploads over the last 14 days: %1", histNone:"none",
+    histAria:"Uploads over the last 14 days: %1", histNone:"none", histMax:"max %1 / day",
     mChangePw:"Change admin password", mPwToast:"The admin password lives in Settings",
     appearance:"Appearance", themeDark:"Dark", themeLight:"Light", logout:"Log out",
     signIn:"Sign in", phLoginPw:"Box admin password", unlock:"Unlock", wrongPw:"Wrong password.",
@@ -1337,7 +1360,7 @@ var I18N = {
     barsNote:"A share that feeds several routes is counted once per route. %1 uploads across %2 routes.",
     emptyTodayT:"Nothing uploaded today", emptyTodayB:"The per-share counters start at the first file of the day.",
     recentActivity:"Recent activity",
-    thFile:"File", thShare:"Share", thMfp:"MFP / user", thDest:"Destination", thStatus:"Status", thTime:"Time",
+    thFile:"File", thShare:"Share", thMfp:"MFP / user", thDest:"Destination", thStatus:"Status", thTime:"Time", thWhen:"When",
     emptyActT:"No activity yet", emptyActB:"Scan a document into one of the shares and it shows up here.",
     routes:"Routes", slabCount:"%1 routes · %2 shares",
     slabHint:"SMB share › watcher › SharePoint · one card per route, so a share that feeds two destinations appears twice · pending is counted per route",
@@ -1361,7 +1384,7 @@ var I18N = {
     thRoute:"Route", thSize:"Size", thAttempt:"Attempt", thFilter:"Filter",
     emptyQueueT:"The queue is empty",
     emptyQueueB:"Every scanned file has been confirmed by Graph. New scans appear here while they upload.",
-    uploadingPct:"uploading %1 % · %2", nextAttempt:"next attempt %1", stabDelay:"stability delay %1",
+    uploadingPct:"uploading %1 % · %2", nextAttempt:"next attempt %1", outage1:" · %1 outage retry", outageN:" · %1 outage retries", stabDelay:"stability delay %1",
     retry:"Retry", remove:"Remove",
     confDrop:"Drop %1 from the queue? The local file stays on disk.",
     toastRetry:"Retry queued", toastDropped:"Removed from the queue",
@@ -1476,6 +1499,7 @@ var I18N = {
     hSubTmpl:"Appended to the destination folder. Tokens: {yyyy} {MM} {dd} {share}",
     boOne:"One attempt, no retry.", boMore:" and %1 more",
     boLine1:"Backoff %1, 1 retry over %2", boLineN:"Backoff %1, %2 retries over %3", boJitter:" ± %1 %",
+    boOutage:" Outages (network, DNS, Graph) do not count and retry from %1, at most every %2, until they pass. If Graph refuses the destination (403, 404), the file goes to quarantine at once.",
     fQuarPerm:"Quarantine on permanent failure",
     whyQuar:"Quarantine is a box-wide setting. After the last attempt the file is moved to the quarantine path from Settings, and the local copy is never deleted.",
     saveRoute:"Save route", toastRouteSaved:"Route saved",
@@ -1670,7 +1694,7 @@ var I18N = {
     nFileWord:"Datei", nFilesWord:"Dateien", kOnDisk:"In der Freigabe", kAfterwards:"Danach", kLastSuccess:"Letzter Erfolg", kLastError:"Letzter Fehler",
     kFiles:"Dateien",
     deltaWeek:"%1 % zur Vorwoche", deltaNew:"erste Woche mit Uploads", hist14d:"vor 14 Tagen", histToday:"heute",
-    histAria:"Uploads der letzten 14 Tage: %1", histNone:"keine",
+    histAria:"Uploads der letzten 14 Tage: %1", histNone:"keine", histMax:"max. %1 / Tag",
     mChangePw:"Admin-Passwort ändern", mPwToast:"Das Admin-Passwort steht in den Einstellungen",
     appearance:"Darstellung", themeDark:"Dunkel", themeLight:"Hell", logout:"Abmelden",
     signIn:"Anmelden", phLoginPw:"Box-Admin-Passwort", unlock:"Entsperren", wrongPw:"Falsches Passwort.",
@@ -1695,7 +1719,7 @@ var I18N = {
     barsNote:"Eine Freigabe mit mehreren Routen zählt pro Route einmal. %1 Uploads über %2 Routen.",
     emptyTodayT:"Heute noch nichts hochgeladen", emptyTodayB:"Die Zähler pro Freigabe starten mit der ersten Datei des Tages.",
     recentActivity:"Letzte Aktivität",
-    thFile:"Datei", thShare:"Freigabe", thMfp:"MFP / Benutzer", thDest:"Ziel", thStatus:"Status", thTime:"Zeit",
+    thFile:"Datei", thShare:"Freigabe", thMfp:"MFP / Benutzer", thDest:"Ziel", thStatus:"Status", thTime:"Zeit", thWhen:"Wann",
     emptyActT:"Noch keine Aktivität", emptyActB:"Scannen Sie ein Dokument in eine Freigabe, dann erscheint es hier.",
     routes:"Routen", slabCount:"%1 Routen · %2 Freigaben",
     slabHint:"SMB-Freigabe › Überwachung › SharePoint · eine Karte pro Route, eine Freigabe mit zwei Zielen erscheint also zweimal · wartende Dateien zählen pro Route",
@@ -1719,7 +1743,7 @@ var I18N = {
     thRoute:"Route", thSize:"Größe", thAttempt:"Versuch", thFilter:"Filter",
     emptyQueueT:"Die Warteschlange ist leer",
     emptyQueueB:"Graph hat jede gescannte Datei bestätigt. Neue Scans erscheinen hier, solange sie hochgeladen werden.",
-    uploadingPct:"lädt hoch, %1 % · %2", nextAttempt:"nächster Versuch %1", stabDelay:"Ruhezeit %1",
+    uploadingPct:"lädt hoch, %1 % · %2", nextAttempt:"nächster Versuch %1", outage1:" · %1 Wiederholung wegen Ausfall", outageN:" · %1 Wiederholungen wegen Ausfall", stabDelay:"Ruhezeit %1",
     retry:"Wiederholen", remove:"Entfernen",
     confDrop:"%1 aus der Warteschlange nehmen? Die lokale Datei bleibt liegen.",
     toastRetry:"Wiederholung eingereiht", toastDropped:"Aus der Warteschlange entfernt",
@@ -1834,6 +1858,7 @@ var I18N = {
     hSubTmpl:"Wird an den Zielordner angehängt. Token: {yyyy} {MM} {dd} {share}",
     boOne:"Ein Versuch, keine Wiederholung.", boMore:" und %1 weitere",
     boLine1:"Backoff %1, 1 Wiederholung über %2", boLineN:"Backoff %1, %2 Wiederholungen über %3", boJitter:" ± %1 %",
+    boOutage:" Ausfälle (Netzwerk, DNS, Graph) zählen nicht und werden ab %1 wiederholt, höchstens alle %2, bis sie vorbei sind. Lehnt Graph das Ziel ab (403, 404), geht die Datei sofort in Quarantäne.",
     fQuarPerm:"Quarantäne bei endgültigem Fehler",
     whyQuar:"Quarantäne ist eine Einstellung der Box. Nach dem letzten Versuch wandert die Datei in den Quarantäne-Pfad aus den Einstellungen, die lokale Kopie wird nie gelöscht.",
     saveRoute:"Route speichern", toastRouteSaved:"Route gespeichert",
@@ -2183,10 +2208,10 @@ function pad(n){ return (n < 10 ? '0' : '') + n; }
 
 function fmtBytes(n){
   n = +n || 0;
-  if (n < 1024) return n + ' B';
+  if (n < 1024) return num(n) + ' B';
   var u = ['KB','MB','GB','TB'], i = -1;
   do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
-  return (n < 100 ? +n.toFixed(1) : Math.round(n)) + ' ' + u[i];
+  return num(n < 100 ? +n.toFixed(1) : Math.round(n)) + ' ' + u[i];
 }
 function parseBytes(s){
   var m = String(s || '').trim().match(/^([\d.,]+)\s*(b|kb|mb|gb|tb)?$/i);
@@ -2208,9 +2233,9 @@ function durSecs(s){
   return tot;
 }
 function fmtSecs(n){
-  if (n < 60) return (Math.round(n * 10) / 10) + ' s';
-  if (n < 3600) return (Math.round(n / 6) / 10) + ' min';
-  return (Math.round(n / 360) / 10) + ' h';
+  if (n < 60) return num(Math.round(n * 10) / 10) + ' s';
+  if (n < 3600) return num(Math.round(n / 6) / 10) + ' min';
+  return num(Math.round(n / 360) / 10) + ' h';
 }
 /* mirrors transfer.Backoff: the delay doubles and is capped at the maximum.
    N attempts leave N-1 waits, so the route's own retry count sets the length. */
@@ -2223,13 +2248,16 @@ function backoffSteps(attempts){
 function backoffText(attempts){
   var p = STATE.retry || {};
   if (!durSecs(p.baseDelay)) return '';
+  // Outages retry on the capped schedule without using attempts, and a refused
+  // destination quarantines at once, so the count only covers the errors between.
+  var rest = tp('boOutage', fmtSecs(durSecs(p.baseDelay)), fmtSecs(durSecs(p.maxDelay) || durSecs(p.baseDelay)));
   var s = backoffSteps(attempts);
-  if (!s.length) return t('boOne');
+  if (!s.length) return t('boOne') + rest;
   var total = s.reduce(function(a, b){ return a + b; }, 0);
   var head = s.slice(0, 4).map(fmtSecs).join(' · ');
   if (s.length > 4) head += tp('boMore', s.length - 4);
   var line = s.length === 1 ? tp('boLine1', head, fmtSecs(total)) : tp('boLineN', head, s.length, fmtSecs(total));
-  return line + (p.jitter ? tp('boJitter', Math.round(p.jitter * 100)) : '');
+  return line + (p.jitter ? tp('boJitter', Math.round(p.jitter * 100)) : '') + '.' + rest;
 }
 function isZero(iso){ if (!iso) return true; var d = new Date(iso); return isNaN(d) || d.getFullYear() < 1971; }
 function fmtTime(iso){ if (isZero(iso)) return '-'; var d = new Date(iso); return pad(d.getHours()) + ':' + pad(d.getMinutes()) + ':' + pad(d.getSeconds()); }
@@ -2242,7 +2270,8 @@ function fmtAgo(iso){
   if (s < 172800) return tp('agoH', Math.round(s / 3600));
   return tp('agoD', Math.round(s / 86400));
 }
-function num(n){ return String(+n || 0).replace(/\B(?=(\d{3})+(?!\d))/g, ' '); }
+/* 1,234 and 3.4 in English, 1.234 and 3,4 in German */
+function num(n){ return (+n || 0).toLocaleString(LANG === 'de' ? 'de-DE' : 'en-GB'); }
 /* mirrors model.RenderTemplate: an unknown token is left alone on purpose */
 function renderTmpl(pat, share, user){
   var d = new Date();
@@ -2470,12 +2499,19 @@ function statusPill(st){
    the daily figure, the line is the trend; a spiky week and a rising month look
    different, and one series cannot show both. */
 function sparkline(daily, fmt){
-  var box = E('div', 'hist'), max = Math.max.apply(null, [1].concat(daily));
+  var box = E('div', 'hist'), top = Math.max.apply(null, [0].concat(daily)), max = Math.max(1, top);
+  var f = fmt || num, loc = LANG === 'de' ? 'de-DE' : 'en-GB';
   for (var i = 0; i < 14; i++){
-    var n = daily[i] || 0, bar = E('i');
+    var n = daily[i] || 0, bar = E('i'), day = new Date();
     if (n > 0){ bar.dataset.v = n; bar.style.height = Math.max(10, n / max * 100) + '%'; }
+    // index 13 is today
+    day.setDate(day.getDate() - 13 + i);
+    bar.title = day.toLocaleDateString(loc, {weekday:'short', day:'numeric', month:'short'}) + ' · ' + f(n);
     box.appendChild(bar);
   }
+  // A full-height bar is the busiest day, so its figure is the top of the scale.
+  // An empty fortnight has no scale worth printing.
+  if (top > 0) box.appendChild(E('span', 'ymax', tp('histMax', f(top))));
   box.setAttribute('role', 'img');
   box.setAttribute('aria-label', tp('histAria', daily.length
     ? daily.map(fmt || String).join(', ') : t('histNone')));
@@ -2943,10 +2979,17 @@ function renderQueue(ids, actionable){
     } else {
       A(state, pill(STPILL[l.state] || 'off', t('sl_' + l.state, l.state)), T(' '),
         E('span', 'small mono-dim', l.state === 'retrying'
-          ? tp('nextAttempt', fmtTime(l.nextAttempt))
+          ? tp('nextAttempt', fmtTime(l.nextAttempt)) + (l.transient ? tp(l.transient === 1 ? 'outage1' : 'outageN', num(l.transient)) : '')
           : (l.state === 'pending' ? tp('stabDelay', fmtDur(sh && sh.rules && sh.rules.stabilityDelay)) : fmtTime(it.discovered))));
     }
-    if (l.lastError) state.appendChild(E('div', 'err', l.lastError));
+    if (l.lastError){
+      // OPEN keeps an expanded error open through the five-second redraw.
+      var ek = 'err ' + it.id + ' ' + l.routeId, ed = E('details', 'err'), es = E('summary', null, l.lastError);
+      ed.open = OPEN.has(ek);
+      ed.ontoggle = function(){ if (ed.open) OPEN.add(ek); else OPEN.delete(ek); };
+      es.dataset.k = ek;
+      A(state, A(ed, es));
+    }
     A(tr, td(null, it.name), td(null, sh ? sh.name : '-'),
         td('mono-dim small', rt ? routeLabel(rt) : '-'),
         td('num mono-dim', fmtBytes(it.size)),
@@ -2959,6 +3002,7 @@ function renderQueue(ids, actionable){
             if (confirm(tp('confDrop', it.name)))
               mutate('/api/queue/remove', {id: it.id}, t('toastDropped'));
           }));
+      [].forEach.call(acts.children, function(b, i){ b.dataset.k = 'act' + i + ' ' + it.id + ' ' + l.routeId; });
       tr.appendChild(A(E('td'), acts));
     }
     tb.appendChild(tr);
@@ -2989,6 +3033,7 @@ function renderQueue(ids, actionable){
             btn('danger xs', t('remove'), function(){
               if (confirm(tp('confRemoveQuar', it.name))) mutate('/api/queue/remove', {id: it.id}, t('toastRemoved'));
             }));
+        [].forEach.call(acts.children, function(b, i){ b.dataset.k = 'quar' + i + ' ' + it.id; });
         tr.appendChild(A(E('td'), acts));
       }
       body.appendChild(tr);
@@ -4279,6 +4324,10 @@ async function changePw(){
 
 /* ============================================================ render + poll */
 function render(){
+  /* The poll rebuilds the tables, which drops focus to the page and sends the next
+     Tab back to the first row. A control with a data-k gets focus back on its new
+     copy; the copy in a hidden view refuses it, so each one is tried in turn. */
+  var fk = document.activeElement && document.activeElement.dataset.k;
   LEGS = legCounts();
   renderChrome();
   renderDashboard();
@@ -4291,6 +4340,10 @@ function render(){
   renderSettingsFromState();
   renderFirewall();
   wizRender();
+  if (fk) [].some.call(document.querySelectorAll('[data-k]'), function(el){
+    if (el.dataset.k === fk) el.focus({preventScroll: true});
+    return document.activeElement === el;
+  });
 }
 /* a dirty form freezes the poll, so a background refresh can never wipe typing */
 document.addEventListener('input', function(e){
